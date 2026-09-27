@@ -1,0 +1,138 @@
+rules_version = '2';
+// Xuélù security rules.
+// Access tiers: 0 public · 1 free (any active account) · 2 standard · 3 premium · 99 admin only.
+// Learners never read raw content collections. They read pre-built "bundles" for the tier
+// their account is entitled to, so Premium content cannot be fetched by a Standard account.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- owner ----------
+    // Replace with the email you will sign in with as the platform owner (Super Admin).
+    function ownerEmail() { return 'OWNER_EMAIL_HERE'; }
+
+    // ---------- helpers ----------
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function adminDoc() { return /databases/$(database)/documents/admins/$(uid()); }
+    function isAdmin() { return signedIn() && exists(adminDoc()); }
+    function role() { return get(adminDoc()).data.role; }
+    function isSuper() { return isAdmin() && role() == 'super'; }
+    function canContent() { return isAdmin() && role() in ['super', 'content']; }
+    function canSupport() { return isAdmin() && role() in ['super', 'support']; }
+
+    function userDoc() { return /databases/$(database)/documents/users/$(uid()); }
+    function accessDoc() { return /databases/$(database)/documents/access/$(uid()); }
+    function accountActive() { return signedIn() && exists(userDoc()) && get(userDoc()).data.status == 'active'; }
+    function paidTier() {
+      return exists(accessDoc())
+        && get(accessDoc()).data.status == 'active'
+        && (get(accessDoc()).data.expiresAt == null || get(accessDoc()).data.expiresAt > request.time)
+        ? get(accessDoc()).data.tier : 1;
+    }
+    function myTier() {
+      return isAdmin() ? 99 : (accountActive() ? (paidTier() > 1 ? paidTier() : 1) : 0);
+    }
+    function registrationOpen() {
+      return get(/databases/$(database)/documents/settings/app).data.allowRegistration == true;
+    }
+    function onlyKeys(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+
+    // ---------- accounts ----------
+    match /users/{userId} {
+      allow read: if signedIn() && (uid() == userId || isAdmin());
+      // self-registration (when enabled) or first-admin bootstrap; status must start active, level 1
+      allow create: if signedIn() && uid() == userId
+        && request.resource.data.status == 'active'
+        && request.resource.data.email == request.auth.token.email
+        && (!exists(/databases/$(database)/documents/settings/bootstrap) || registrationOpen());
+      // learners may only change their own profile preferences
+      allow update: if signedIn() && uid() == userId && resource.data.status == 'active'
+        && onlyKeys(['name', 'prefs', 'lastActive']);
+      allow create, update, delete: if canSupport();
+    }
+
+    match /admins/{adminId} {
+      allow read: if signedIn() && (uid() == adminId || isAdmin());
+      allow write: if isSuper();
+      // bootstrap: the very first account may make itself Super Admin, once
+      allow create: if signedIn() && uid() == adminId
+        && request.resource.data.role == 'super'
+        && request.auth.token.email == ownerEmail()
+        && !exists(/databases/$(database)/documents/settings/bootstrap);
+    }
+
+    match /adminNotes/{userId} {
+      allow read, write: if canSupport();
+    }
+
+    // ---------- plans & access ----------
+    match /plans/{planId} {
+      allow read: if true;
+      allow write: if isSuper();
+    }
+    match /access/{userId} {
+      allow read: if signedIn() && (uid() == userId || isAdmin());
+      allow write: if canSupport();
+      // self-registration may create a free entitlement only
+      allow create: if signedIn() && uid() == userId && registrationOpen()
+        && request.resource.data.tier == 1 && request.resource.data.source == 'registration';
+    }
+    match /subscriptions/{subId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == uid());
+      allow write: if canSupport();
+    }
+
+    // ---------- content (admins only; learners use bundles) ----------
+    match /{col}/{docId} {
+      allow read: if isAdmin() && col in ['patterns','lessons','grammar','vocabulary','dialogues','quizzes','audio','paths','releases','lexicon','characters'];
+      allow write: if canContent() && col in ['patterns','lessons','grammar','vocabulary','dialogues','quizzes','audio','paths','releases','lexicon','characters'];
+      match /versions/{v} {
+        allow read: if isAdmin();
+        allow write: if canContent();
+      }
+    }
+
+    // ---------- published bundles ----------
+    match /bundles/{bundleId} {
+      allow read: if bundleId == 'meta' || resource.data.tier <= myTier();
+      allow write: if canContent();
+    }
+
+    // ---------- learner data ----------
+    match /progress/{userId} {
+      allow read: if signedIn() && (uid() == userId || isAdmin());
+      allow write: if signedIn() && uid() == userId && accountActive();
+      match /events/{eventId} {
+        allow read: if signedIn() && (uid() == userId || isAdmin());
+        allow create: if signedIn() && uid() == userId && accountActive();
+      }
+    }
+    match /reviews/{userId}/items/{itemId} {
+      allow read, write: if signedIn() && uid() == userId;
+    }
+    match /bookmarks/{userId}/items/{itemId} {
+      allow read, write: if signedIn() && uid() == userId;
+    }
+    match /notes/{userId}/items/{itemId} {
+      allow read, write: if signedIn() && uid() == userId;
+    }
+    match /activity/{id} {
+      allow read: if isAdmin();
+      allow create: if signedIn() && request.resource.data.uid == uid();
+    }
+
+    // ---------- settings ----------
+    match /settings/app {
+      allow read: if true;
+      allow write: if isSuper();
+    }
+    match /settings/bundle {
+      allow read: if isAdmin();
+      allow write: if canContent();
+    }
+    match /settings/bootstrap {
+      allow read: if true;
+      allow create: if signedIn() && existsAfter(/databases/$(database)/documents/admins/$(uid()));
+    }
+  }
+}
