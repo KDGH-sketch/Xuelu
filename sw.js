@@ -1,5 +1,5 @@
 // Xuélù service worker: the app shell and data work offline; updates arrive in the background.
-const SHELL = "xuelu-shell-v1", RUNTIME = "xuelu-runtime";
+const SHELL = "xuelu-shell-v2", RUNTIME = "xuelu-runtime";
 const CORE = ["./","index.html","admin/index.html","css/app.css","css/admin.css","manifest.webmanifest","icon.svg",
   "js/config.js","js/api/index.js","js/api/firebase.js","js/api/local.js",
   "js/shared/ui.js","js/shared/i18n.js","js/shared/content.js","js/shared/dict.js","js/shared/engine.js","js/shared/speech.js","js/shared/widgets.js","js/shared/quiz.js","js/shared/setup.js",
@@ -17,7 +17,9 @@ self.addEventListener("fetch", e => {
   const isFont = /fonts\.(googleapis|gstatic)\.com/.test(url.host);
   if (!sameOrigin && !isFont && !/\.(mp3|m4a|ogg|wav|webm)$/i.test(url.pathname)) return;
   e.respondWith((async () => {
-    const hit = await caches.match(req, { ignoreSearch: sameOrigin });
+    const opt = { ignoreSearch: sameOrigin };
+    // newest copy first: RUNTIME holds files refreshed from the network, SHELL the install-time copies
+    const hit = (await (await caches.open(RUNTIME)).match(req, opt)) || (await caches.match(req, opt));
     const net = fetch(req).then(async res => { if (res && (res.ok || res.type==="opaque")){ const c = await caches.open(RUNTIME); c.put(req, res.clone()); } return res; }).catch(() => null);
     if (hit){ e.waitUntil(net); return hit; }
     const res = await net; if (res) return res;

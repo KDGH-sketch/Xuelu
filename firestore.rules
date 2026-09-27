@@ -8,7 +8,7 @@ service cloud.firestore {
 
     // ---------- owner ----------
     // Replace with the email you will sign in with as the platform owner (Super Admin).
-    function ownerEmail() { return 'OWNER_EMAIL_HERE'; }
+    function ownerEmail() { return 'kindathanomsuck@gmail.com'; }
 
     // ---------- helpers ----------
     function signedIn() { return request.auth != null; }
